@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#EEF3F8">
+<title>Avisar a los chicos</title>
+<style>
+  :root {
+    --fondo: #EEF3F8;
+    --texto: #1B2430;
+    --suave: #5A6576;
+    --santi: #1E5AA8;
+    --juan: #2E7D4F;
+    --error: #B3261E;
+    --ok: #2E7D4F;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 24px 20px;
+    background: var(--fondo);
+    color: var(--texto);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .oculto { display: none !important; }
+
+  /* Pantalla principal */
+  #principal { flex: 1; display: flex; flex-direction: column; gap: 20px; }
+  .alerta {
+    flex: 1;
+    width: 100%;
+    border: none;
+    border-radius: 28px;
+    color: #fff;
+    font: inherit;
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: transform .1s, opacity .2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .alerta:active { transform: scale(.97); }
+  .alerta:disabled { opacity: .6; }
+  #santi { background: var(--santi); }
+  #juan  { background: var(--juan); }
+  button:focus-visible, input:focus-visible { outline: 4px solid var(--texto); outline-offset: 4px; }
+
+  #estado { margin: 0; min-height: 3em; text-align: center; font-size: 1.25rem; font-weight: 600; }
+  #estado.error { color: var(--error); }
+  #estado.ok { color: var(--ok); }
+
+  .enlace {
+    align-self: center;
+    background: none;
+    border: none;
+    color: var(--suave);
+    font: inherit;
+    font-size: .95rem;
+    text-decoration: underline;
+    padding: 8px;
+  }
+
+  /* Pantalla de configuración (solo la primera vez) */
+  #config { margin: auto 0; display: flex; flex-direction: column; gap: 16px; }
+  #config h1 { margin: 0; font-size: 1.6rem; }
+  #config p { margin: 0; color: var(--suave); line-height: 1.5; }
+  #clave {
+    font: inherit;
+    font-size: 1.2rem;
+    padding: 16px;
+    border: 2px solid #C5CFDB;
+    border-radius: 14px;
+    background: #fff;
+  }
+  #guardar {
+    font: inherit;
+    font-size: 1.3rem;
+    font-weight: 700;
+    padding: 18px;
+    border: none;
+    border-radius: 14px;
+    background: var(--texto);
+    color: #fff;
+  }
+  @media (prefers-reduced-motion: reduce) { .alerta { transition: none; } }
+</style>
+</head>
+<body>
+
+  <section id="config" class="oculto">
+    <h1>Código de casa</h1>
+    <p>Escribe el código que tienen puesto los ordenadores. Solo hace falta hacerlo una vez en este móvil.</p>
+    <input id="clave" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Código">
+    <button id="guardar" onclick="guardarClave()">Guardar código</button>
+  </section>
+
+  <section id="principal" class="oculto">
+    <button class="alerta" id="santi" onclick="alertar(this, 'santi', 'Santi')">Alertar PC Santi</button>
+    <button class="alerta" id="juan" onclick="alertar(this, 'juan', 'Juan')">Alertar PC Juan</button>
+    <p id="estado" role="status"></p>
+    <button class="enlace" onclick="cambiarClave()">Cambiar código</button>
+  </section>
+
+<script>
+const SERVIDOR = 'https://ntfy.sh';
+const ESPERA_RECIBIDO_MS = 10000;   // si el PC no contesta en 10 s, probablemente está apagado
+
+let clave = localStorage.getItem('claveAlerta');
+let fuente = null;                  // conexión para recibir confirmaciones de los PCs
+const pendientes = {};              // temporizadores por persona
+
+function mostrarEstado(texto, tipo) {
+  const estado = document.getElementById('estado');
+  estado.className = tipo || '';
+  estado.textContent = texto;
+}
+
+function iniciar() {
+  const tieneClave = !!clave;
+  document.getElementById('config').classList.toggle('oculto', tieneClave);
+  document.getElementById('principal').classList.toggle('oculto', !tieneClave);
+  if (tieneClave) escucharConfirmaciones();
+}
+
+function guardarClave() {
+  const valor = document.getElementById('clave').value.trim();
+  if (!/^[A-Za-z0-9_-]{8,50}$/.test(valor)) {
+    alert('El código debe tener entre 8 y 50 caracteres: letras, números, guiones o guiones bajos.');
+    return;
+  }
+  clave = valor;
+  localStorage.setItem('claveAlerta', clave);
+  iniciar();
+}
+
+function cambiarClave() {
+  if (fuente) fuente.close();
+  localStorage.removeItem('claveAlerta');
+  clave = null;
+  document.getElementById('clave').value = '';
+  iniciar();
+}
+
+function escucharConfirmaciones() {
+  if (fuente) fuente.close();
+  fuente = new EventSource(`${SERVIDOR}/${clave}-ok/sse`);
+  fuente.onmessage = (e) => {
+    const datos = JSON.parse(e.data);
+    const [persona, estado] = (datos.message || '').split(':');
+    const nombre = persona === 'santi' ? 'Santi' : persona === 'juan' ? 'Juan' : null;
+    if (!nombre) return;
+    if (estado === 'recibido') {
+      clearTimeout(pendientes[persona]);
+      mostrarEstado(`Aviso en pantalla en el PC de ${nombre}`, 'ok');
+    } else if (estado === 'visto') {
+      mostrarEstado(`${nombre} ha visto el aviso`, 'ok');
+    }
+  };
+}
+
+async function alertar(boton, persona, nombre) {
+  boton.disabled = true;
+  mostrarEstado(`Enviando alerta a ${nombre}...`);
+  try {
+    const r = await fetch(`${SERVIDOR}/${clave}-${persona}`, { method: 'POST', body: 'alerta' });
+    if (!r.ok) throw new Error();
+    mostrarEstado(`Alerta enviada. Esperando al PC de ${nombre}...`);
+    clearTimeout(pendientes[persona]);
+    pendientes[persona] = setTimeout(() => {
+      mostrarEstado(`El PC de ${nombre} no ha respondido. Puede que esté apagado o sin internet.`, 'error');
+    }, ESPERA_RECIBIDO_MS);
+  } catch (e) {
+    mostrarEstado('No se pudo enviar. Comprueba que el móvil tiene internet.', 'error');
+  } finally {
+    setTimeout(() => { boton.disabled = false; }, 1500);
+  }
+}
+
+// Al volver a la app después de un rato, reabre la conexión por si el móvil la cerró
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && clave) escucharConfirmaciones();
+});
+
+iniciar();
+</script>
+</body>
+</html>
